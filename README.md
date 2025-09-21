@@ -256,6 +256,74 @@ Response (contoh ringkas):
 }
 ```
 
+### 7.2) Kebijakan Jawaban: Database-First + Thematic Fallback
+
+Bot menerapkan prioritas berikut:
+- Database-First: Jika ada data dari database yang relevan, jawaban disusun berdasarkan hasil query (field seperti `related_trips`, `related_promos`, `related_collections`, dan ringkasan `summary`).
+- Thematic Fallback (on-topic): Jika tidak ada data DB relevan, bot tetap menjawab secara umum namun tetap dalam tema travel (tips/rekomendasi best-practices) tanpa mengarang data spesifik dari DB. Ditandai dengan `used_context_keys` berisi `"general.ai"` atau `"thematic.ai"`.
+- Off-topic: Jika topik di luar tema travel (mis. saham, kripto), bot menolak dengan pesan singkat.
+
+Kaidah tambahan:
+- Filter tanggal untuk promo hanya ditambahkan jika pengguna memintanya ("hari ini", "bulan ini", "tahun ini"). Jika tidak, query promos tidak membatasi tanggal selain `is_active = 1`.
+- SQL AI dibatasi SELECT-only dan tabel whitelist.
+
+Contoh Fallback General (intent public, DB kosong):
+Request:
+```bash
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Trip apa yang bagus untuk saya ke Eropa"
+  }'
+```
+Response (contoh ringkas):
+```json
+{
+  "reply": "Untuk trip ke Eropa, pertimbangkan musim (spring/summer), durasi 10–14 hari, kombinasi kota ikonik (Paris–Rome–Barcelona) atau fokus satu negara, serta tipe pengalaman (sejarah, kuliner, alam). Tentukan budget dan waktu terbaik, lalu cek ketersediaan dan visa.",
+  "used_context_keys": ["general.ai"],
+  "related_trips": [],
+  "related_promos": [],
+  "related_collections": {}
+}
+```
+
+Contoh Thematic Tips (on-topic di luar DB):
+Request:
+```bash
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Berikan saya tips bepergian agar aman"
+  }'
+```
+Response (contoh ringkas):
+```json
+{
+  "reply": "- Simpan dokumen penting dan salinannya terpisah\n- Gunakan asuransi perjalanan\n- Hindari membagikan rincian rencana ke orang asing\n- Pantau barang berharga dan gunakan tas anti-maling\n- Riset area rawan dan nomor darurat lokal",
+  "used_context_keys": ["thematic.ai"],
+  "related_trips": [],
+  "related_promos": [],
+  "related_collections": {}
+}
+```
+
+Contoh Off-topic (ditolak):
+Request:
+```bash
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Harga saham hari ini?"
+  }'
+```
+Response (contoh ringkas):
+```json
+{
+  "reply": "Maaf, topik di luar tema travel. Ajukan pertanyaan seputar promo, trip, itinerary, keamanan perjalanan, dsb.",
+  "used_context_keys": []
+}
+```
+
 ### 8) Endpoint Lain
 - Daftar booking milik user login:
   ```powershell
