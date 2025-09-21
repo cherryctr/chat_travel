@@ -36,6 +36,25 @@ class GeminiService:
 		return resp.text.strip() if hasattr(resp, "text") and resp.text else "Maaf, pertanyaan di luar konteks database ini."
 
 	@classmethod
+	def answer_thematic(cls, user_message: str) -> str:
+		"""Jawaban tematik singkat (mis. tips keamanan/perjalanan) saat tidak ada konteks DB, asalkan topiknya relevan.
+		Fokus ke best practices generik, tanpa mengutip data spesifik DB.
+		"""
+		cls._ensure_init()
+		model_name = settings.gemini_model
+		model = genai.GenerativeModel(model_name)
+
+		instructions = (
+			"Anda adalah asisten TravelGO. Berikan jawaban singkat, praktis, dan aman terkait topik perjalanan/tips. "
+			"Jangan mengarang fakta spesifik (harga, jadwal, kebijakan). Fokus pada best practices umum. "
+			"Jika pengguna meminta rekomendasi destinasi/kategori (mis. trip Eropa), berikan panduan umum: contoh tujuan/kategori populer, pertimbangan musim, durasi, jenis pengalaman, dan kriteria memilih. "
+			"Gunakan bahasa Indonesia dan beri 3-6 poin ringkas bila cocok."
+		)
+		prompt = f"{instructions}\n\nPermintaan pengguna:\n{user_message}"
+		resp = model.generate_content(prompt)
+		return resp.text.strip() if hasattr(resp, "text") and resp.text else "Berikut beberapa tips umum yang bisa Anda terapkan saat bepergian."
+
+	@classmethod
 	def generate_sql_queries(cls, user_message: str, allowed_tables: List[str]) -> List[str]:
 		"""Minta model menghasilkan daftar query SELECT-only terhadap tabel whitelist.
 

@@ -17,6 +17,11 @@ SENSITIVE_KEYWORDS = {"password", "kata sandi", "token", "apikey", "api key"}
 
 
 class ChatService:
+	# Topik tematik yang diperbolehkan untuk jawaban umum (tanpa konteks DB)
+	ALLOWED_THEMATIC_KEYWORDS: Set[str] = {
+		"tips", "aman", "keamanan", "safety", "perjalanan", "bepergian", "berpergian", "travel",
+		"packing", "itinerary", "budget", "hemat", "kesehatan", "cuaca", "dokumen"
+	}
 	@staticmethod
 	def classify_intent(message: str) -> str:
 		msg = message.lower()
@@ -27,6 +32,19 @@ class ChatService:
 		if any(k in msg for k in ALLOWED_PUBLIC_TOPICS):
 			return "public"
 		return "unknown"
+
+	@staticmethod
+	def is_thematic_allowed(message: str) -> bool:
+		msg = message.lower()
+		return any(k in msg for k in ChatService.ALLOWED_THEMATIC_KEYWORDS)
+
+	@staticmethod
+	def is_on_theme(message: str) -> bool:
+		"""True bila pesan masih di dalam tema travel (topik publik/privat yg dikenal atau tips tematik)."""
+		intent = ChatService.classify_intent(message)
+		if intent in ("public", "private", "sensitive"):
+			return True
+		return ChatService.is_thematic_allowed(message)
 
 	@staticmethod
 	def build_public_context(db: Session) -> Tuple[List[str], List[str]]:

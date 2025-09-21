@@ -22,6 +22,12 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db), user=Depends(AuthS
 		return ChatResponse(reply="Akses ditolak. Jangan meminta data sensitif seperti password atau token.", used_context_keys=[])
 	if intent == "private" and user is None:
 		return ChatResponse(reply="Silakan login untuk mengakses informasi pribadi seperti booking Anda.", used_context_keys=[])
+	# Enforce tema travel secara global
+	if not ChatService.is_on_theme(payload.message):
+		return ChatResponse(
+			reply="Maaf, topik di luar tema travel. Ajukan pertanyaan seputar promo, trip, itinerary, keamanan perjalanan, dsb.",
+			used_context_keys=[],
+		)
 
 	# Agregasi hasil sekali jalan berbasis query AI
 	chunks, keys, agg = ChatService.build_ai_aggregate(db=db, message=payload.message, user=user)
@@ -43,6 +49,29 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db), user=Depends(AuthS
 
 	# Jika tidak ada konteks sama sekali
 	if not chunks:
+		# Coba respons general bertema travel untuk intent public/unknown atau tips tematik
+		if intent in ("public", "unknown") or ChatService.is_thematic_allowed(payload.message):
+			reply = GeminiService.answer_thematic(user_message=payload.message)
+			keys.append("general.ai")
+			summary = _build_general_summary(
+				message=payload.message,
+				reply=reply,
+				related_trips=related_trips,
+				related_promos=related_promos,
+				user_bookings=user_bookings,
+			)
+			return ChatResponse(
+				reply=reply,
+				used_context_keys=keys,
+				suggested_actions=suggested_actions,
+				related_trips=related_trips,
+				user_bookings=user_bookings,
+				related_promos=related_promos,
+				generated_queries=generated_queries,
+				summary=summary,
+				related_collections=related_collections,
+			)
+		# Jika topik tidak diizinkan → tetap tolak
 		summary = _build_general_summary(
 			message=payload.message,
 			reply="Maaf, pertanyaan di luar konteks database ini.",
