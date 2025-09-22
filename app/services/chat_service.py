@@ -3,12 +3,14 @@ import re
 from datetime import date
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from datetime import datetime
 
 from app.db.models import Booking, Trip, User
 
 
 ALLOWED_PUBLIC_TOPICS = {
 	"trip", "trips", "jadwal", "schedule", "promo", "promosi", "diskon", "blog", "artikel",
+	"kategori", "category", "categories", "tag", "tags",
 }
 ALLOWED_PRIVATE_TOPICS = {
 	"booking", "pesanan", "pesananku", "booking saya", "riwayat", "history"
@@ -22,6 +24,19 @@ class ChatService:
 		"tips", "aman", "keamanan", "safety", "perjalanan", "bepergian", "berpergian", "travel",
 		"packing", "itinerary", "budget", "hemat", "kesehatan", "cuaca", "dokumen"
 	}
+	GREETING_KEYWORDS: Set[str] = {
+		"hai", "haii", "halo", "hello", "hi", "hey", "assalamualaikum", "assalamu'alaikum", "assalamu alaikum",
+		"selamat pagi", "selamat siang", "selamat sore", "selamat malam"
+	}
+	# Kata kunci pemeriksaan/informasi spesifik (digunakan untuk gating entitas publik seperti promo)
+	CHECK_KEYWORDS: Set[str] = {"status", "cek", "periksa", "valid", "berlaku", "detail", "rincian"}
+	PROMO_KEYWORDS: Set[str] = {"promo", "kode promo", "kupon", "voucher", "diskon"}
+	TRIP_KEYWORDS: Set[str] = {"trip", "trips", "paket", "paket wisata"}
+	BLOG_KEYWORDS: Set[str] = {"blog", "artikel", "post", "tulisan"}
+	REVIEW_KEYWORDS: Set[str] = {"review", "ulasan", "testimoni"}
+	CATEGORY_KEYWORDS: Set[str] = {"kategori", "category", "categories"}
+	TAG_KEYWORDS: Set[str] = {"tag", "tags"}
+	SCHEDULE_KEYWORDS: Set[str] = {"jadwal", "schedule"}
 	@staticmethod
 	def classify_intent(message: str) -> str:
 		msg = message.lower()
@@ -45,6 +60,232 @@ class ChatService:
 		if intent in ("public", "private", "sensitive"):
 			return True
 		return ChatService.is_thematic_allowed(message)
+
+	@staticmethod
+	def is_greeting(message: str) -> bool:
+		m = message.lower().strip()
+		# Normalisasi spasi
+		m = re.sub(r"\s+", " ", m)
+		# Cepat: cek keyword biasa
+		if any(k in m for k in ChatService.GREETING_KEYWORDS):
+			return True
+		# Regex untuk variasi berulang huruf: haiiiii, hallooo, hayyyyy, heyyy, hellooo
+		patterns = [
+			r"\bha+i+\b",
+			r"\bha+l+o+\b",    # halo/hallo/halloo
+			r"\bha+y+\b",
+			r"\bhi+\b",
+			r"\bhe+y+\b",
+			r"\bhell?o+\b",
+			r"\bass+ala?mu ?a'?laik(u|um)\b",
+			r"\bselamat (pagi|siang|sore|malam)\b",
+		]
+		return any(re.search(p, m) for p in patterns)
+
+	@staticmethod
+	def is_pure_greeting(message: str) -> bool:
+		"""Salam murni: sapaan singkat tanpa konteks pertanyaan (tidak mengandung kata topik)."""
+		m = message.lower().strip()
+		if not ChatService.is_greeting(m):
+			return False
+		# Jika ada kata kunci topik, anggap bukan greeting murni
+		topic_words = [
+			"promo", "trip", "booking", "status", "cek", "periksa", "kode", "jadwal", "itinerary", "tips", "harga",
+		]
+		if any(w in m for w in topic_words):
+			return False
+		# Jika panjang sangat pendek, anggap greeting murni
+		return len(m) <= 20
+
+	@staticmethod
+	def build_greeting_reply() -> str:
+		hour = datetime.now().hour
+		if 4 <= hour < 11:
+			waktu = "pagi"
+		elif 11 <= hour < 15:
+			waktu = "siang"
+		elif 15 <= hour < 18:
+			waktu = "sore"
+		else:
+			waktu = "malam"
+		return f"Halo, selamat {waktu}! Ada yang bisa saya bantu seputar promo, trip, atau cek booking?"
+
+	@staticmethod
+	def is_private_topic(message: str) -> bool:
+		msg = message.lower()
+		return any(k in msg for k in ALLOWED_PRIVATE_TOPICS)
+
+	@staticmethod
+	def detect_private_subintent(message: str) -> str:
+		"""Deteksi sub-intent pada ranah privat untuk membentuk pesan instruksi yang lebih spesifik."""
+		m = message.lower()
+		if any(k in m for k in ["pembayaran", "payment", "bayar"]):
+			return "payment_status"
+		if any(k in m for k in ["refund", "pengembalian dana"]):
+			return "refund"
+		if any(k in m for k in ["detail", "rincian"]):
+			return "booking_detail"
+		if any(k in m for k in ["status", "cek", "periksa", "check"]):
+			return "booking_status"
+		return "unknown_private"
+
+	@staticmethod
+	def is_pii_lookup(message: str) -> bool:
+		"""True jika pesan tampak mencoba mencari data pribadi (nama/email/telepon) tanpa kode booking."""
+		m = message.lower()
+		if any(k in m for k in ["nama", "email", "telepon", "no hp", "nohp", "whatsapp", "wa", "alamat", "nik", "ktp", "cari orang", "cari pengguna", "cari user"]):
+			return True
+		# Pola email
+		if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", message):
+			return True
+		# Pola nomor telepon sederhana (>=8 digit beruntun)
+		if re.search(r"\b\+?\d[\d\s\-]{7,}\b", message):
+			return True
+		return False
+
+	@staticmethod
+	def needs_promo_identifier(message: str) -> bool:
+		"""Benarkan jika user nampaknya ingin memeriksa promo spesifik (status/detail/valid) namun belum tentu menyebut kode."""
+		m = message.lower()
+		return any(k in m for k in ChatService.PROMO_KEYWORDS) and any(k in m for k in ChatService.CHECK_KEYWORDS)
+
+	@staticmethod
+	def _extract_promo_code(db: Session, message: str) -> str | None:
+		"""Ekstrak kandidat kode promo dari pesan dengan memvalidasi ke DB (exact match)."""
+		# Ambil token uppercase alfanumerik panjang>=4 sebagai kandidat
+		candidates = set()
+		for tok in re.findall(r"\b[A-Z0-9]{4,}\b", message.upper()):
+			candidates.add(tok)
+		if not candidates:
+			return None
+		for code in candidates:
+			row = db.execute(text("SELECT promo_code FROM promos WHERE promo_code = :c LIMIT 1"), {"c": code}).fetchone()
+			if row and row[0]:
+				return row[0]
+		return None
+
+	# ===== Trip gating =====
+	@staticmethod
+	def needs_trip_identifier(message: str) -> bool:
+		m = message.lower()
+		return any(k in m for k in ChatService.TRIP_KEYWORDS) and any(k in m for k in ChatService.CHECK_KEYWORDS)
+
+	@staticmethod
+	def _extract_trip_slug_or_id(db: Session, message: str) -> tuple[str | None, int | None]:
+		"""Coba temukan slug atau id trip yang valid berdasarkan teks pesan.
+		Return (slug, id). Salah satu bisa None.
+		"""
+		# Cari angka id eksplisit
+		m_id = re.search(r"\btrip\s*#?(\d+)\b", message.lower())
+		if m_id:
+			try:
+				trip_id = int(m_id.group(1))
+				from app.db.models import Trip
+				obj = db.query(Trip).filter(Trip.id == trip_id).first()
+				if obj:
+					return None, obj.id
+			except Exception:
+				pass
+		# Cari kandidat slug (token huruf-angka dengan dash)
+		for tok in re.findall(r"\b[a-z0-9]+(?:-[a-z0-9]+)+\b", message.lower()):
+			row = db.execute(text("SELECT slug FROM trips WHERE slug = :s LIMIT 1"), {"s": tok}).fetchone()
+			if row and row[0]:
+				return row[0], None
+		return None, None
+
+	# ===== Blog gating =====
+	@staticmethod
+	def needs_blog_identifier(message: str) -> bool:
+		m = message.lower()
+		return any(k in m for k in ChatService.BLOG_KEYWORDS) and any(k in m for k in ChatService.CHECK_KEYWORDS)
+
+	@staticmethod
+	def _extract_blog_slug(db: Session, message: str) -> str | None:
+		for tok in re.findall(r"\b[a-z0-9]+(?:-[a-z0-9]+)+\b", message.lower()):
+			row = db.execute(text("SELECT slug FROM blogs WHERE slug = :s LIMIT 1"), {"s": tok}).fetchone()
+			if row and row[0]:
+				return row[0]
+		return None
+
+	# ===== Review gating =====
+	@staticmethod
+	def needs_review_identifier(message: str) -> bool:
+		m = message.lower()
+		return any(k in m for k in ChatService.REVIEW_KEYWORDS) and any(k in m for k in ChatService.CHECK_KEYWORDS)
+
+	@staticmethod
+	def _extract_review_id(db: Session, message: str) -> int | None:
+		m = re.search(r"\breview\s*#?(\d+)\b", message.lower())
+		if not m:
+			return None
+		try:
+			rev_id = int(m.group(1))
+			row = db.execute(text("SELECT id FROM reviews WHERE id = :i LIMIT 1"), {"i": rev_id}).fetchone()
+			return rev_id if row else None
+		except Exception:
+			return None
+
+	# ===== Category gating =====
+	@staticmethod
+	def needs_category_identifier(message: str) -> bool:
+		m = message.lower()
+		return any(k in m for k in ChatService.CATEGORY_KEYWORDS) and any(k in m for k in ChatService.CHECK_KEYWORDS)
+
+	@staticmethod
+	def _extract_category_slug(db: Session, message: str) -> str | None:
+		for tok in re.findall(r"\b[a-z0-9]+(?:-[a-z0-9]+)+\b", message.lower()):
+			row = db.execute(text("SELECT slug FROM categories WHERE slug = :s LIMIT 1"), {"s": tok}).fetchone()
+			if row and row[0]:
+				return row[0]
+		return None
+
+	# ===== Tag gating =====
+	@staticmethod
+	def needs_tag_identifier(message: str) -> bool:
+		m = message.lower()
+		return any(k in m for k in ChatService.TAG_KEYWORDS) and any(k in m for k in ChatService.CHECK_KEYWORDS)
+
+	@staticmethod
+	def _extract_tag_slug(db: Session, message: str) -> str | None:
+		for tok in re.findall(r"\b[a-z0-9]+(?:-[a-z0-9]+)+\b", message.lower()):
+			row = db.execute(text("SELECT slug FROM tags WHERE slug = :s LIMIT 1"), {"s": tok}).fetchone()
+			if row and row[0]:
+				return row[0]
+		return None
+
+	# ===== Schedule gating =====
+	@staticmethod
+	def needs_schedule_identifier(message: str) -> bool:
+		m = message.lower()
+		return any(k in m for k in ChatService.SCHEDULE_KEYWORDS) and any(k in m for k in ChatService.CHECK_KEYWORDS)
+
+	@staticmethod
+	def is_internal_data_request(message: str) -> bool:
+		m = message.lower()
+		internal = [
+			"contacts", "sessions", "cache", "failed_jobs", "jobs", "migrations", "password", "token",
+		]
+		return any(k in m for k in internal)
+
+	@staticmethod
+	def has_private_identifier(message: str) -> bool:
+		"""Deteksi keberadaan identifier privat pada pesan (mis. kode booking)."""
+		# Batasi hanya kode yang berawalan TG dengan opsional '-' atau spasi, diikuti 6+ alfanumerik
+		import re as _re
+		upper = message.upper()
+		pattern = r"\bTG[-\s]?[A-Z0-9]{6,}\b"
+		return _re.search(pattern, upper) is not None
+
+	@staticmethod
+	def _extract_booking_code(message: str, override: str | None) -> str | None:
+		import re as _re
+		if override:
+			val = override.strip().upper()
+			if _re.match(r"^TG[-\s]?[A-Z0-9]{6,}$", val):
+				return val
+		upper = message.upper()
+		m = _re.search(r"\b(TG[-\s]?[A-Z0-9]{6,})\b", upper)
+		return m.group(1) if m else None
 
 	@staticmethod
 	def build_public_context(db: Session) -> Tuple[List[str], List[str]]:
@@ -117,10 +358,9 @@ class ChatService:
 
 	@staticmethod
 	def detect_booking_by_code(db: Session, user: User | None, message: str) -> Booking | None:
-		m = re.search(r"\b([A-Z]{2}-?[A-Z0-9]{3,}|TG-[A-Z0-9]{6,})\b", message.upper())
-		if not m:
+		code = ChatService._extract_booking_code(message, None)
+		if not code:
 			return None
-		code = m.group(1)
 		q = db.query(Booking).filter(Booking.booking_code == code)
 		if user is not None:
 			q = q.filter(Booking.customer_email == user.email)
@@ -164,10 +404,18 @@ class ChatService:
 		keys: List[str] = []
 		keywords = ChatService._extract_keywords(message)
 		params = {}
+		msg_lower = message.lower()
+		# Default tampilkan promo aktif tanpa pembatas tanggal; tanggal hanya jika diminta
 		base = (
 			"SELECT name, promo_code, discount_type, discount_value, is_active, start_date, end_date "
-			"FROM promos WHERE is_active = 1 AND start_date <= NOW() AND end_date >= NOW()"
+			"FROM promos WHERE is_active = 1"
 		)
+		if "hari ini" in msg_lower:
+			base += " AND start_date <= NOW() AND end_date >= NOW()"
+		elif "bulan ini" in msg_lower:
+			base += " AND ((MONTH(start_date)=MONTH(CURDATE()) AND YEAR(start_date)=YEAR(CURDATE())) OR (MONTH(end_date)=MONTH(CURDATE()) AND YEAR(end_date)=YEAR(CURDATE())))"
+		elif "tahun ini" in msg_lower:
+			base += " AND (YEAR(start_date)=YEAR(CURDATE()) OR YEAR(end_date)=YEAR(CURDATE()))"
 		if keywords:
 			# Filter sederhana untuk nama/description/promo_code
 			like_clauses = []
@@ -346,18 +594,18 @@ class ChatService:
 		"""Jika pesan berisi kode booking (mis. BK12345), tampilkan detailnya (dibatasi milik user)."""
 		chunks: List[str] = []
 		keys: List[str] = []
-		m = re.search(r"\b([A-Z]{2}\d{3,})\b", message.upper())
-		if not m:
+		code = ChatService._extract_booking_code(message, None)
+		if not code:
 			return chunks, keys
-		code = m.group(1)
 		q = db.query(Booking).filter(Booking.booking_code == code)
 		if user is not None:
 			q = q.filter(Booking.customer_email == user.email)
 		b = q.first()
 		if b:
 			trip_name = b.trip.name if b.trip else "-"
+			# Batasi informasi sesuai kebijakan (tanpa PII, tidak tampilkan jumlah/nominal)
 			chunks.append(
-				f"Detail Booking {b.booking_code}: trip {trip_name}, keberangkatan {b.departure_date}, peserta {b.participants}, total {b.total_amount}, status {b.status}, pembayaran {b.payment_status}"
+				f"Detail Booking {b.booking_code}: trip {trip_name}, keberangkatan {b.departure_date}, status {b.status}, pembayaran {b.payment_status}"
 			)
 			keys.append("bookings.by_code")
 		return chunks, keys
@@ -426,6 +674,12 @@ class ChatService:
 		"trip_facilities",
 		"trip_itineraries",
 		"reviews",
+		"categories",
+		"trip_categories",
+		"tags",
+		"promo_trip",
+		"blog_tag",
+		"trip_trip_category",
 	}
 
 	@staticmethod
@@ -464,7 +718,7 @@ class ChatService:
 		return m.group(1) if m else None
 
 	@staticmethod
-	def build_ai_aggregate(db: Session, message: str, user: User | None) -> Tuple[List[str], List[str], Dict[str, Any]]:
+	def build_ai_aggregate(db: Session, message: str, user: User | None, booking_code: str | None = None) -> Tuple[List[str], List[str], Dict[str, Any]]:
 		"""Bangun konteks dan hasil terkait berdasarkan query yang digenerate AI (SELECT-only).
 
 		Return:
@@ -543,18 +797,30 @@ class ChatService:
 				# Lewati query yang error
 				continue
 
-		# 3) Tambahkan konteks privat bila perlu & aman
+		# 3) Tambahkan konteks privat berbasis identifier (tanpa auth)
 		intent = ChatService.classify_intent(message)
-		if intent == "private" and user is not None:
+		if intent == "private":
 			try:
-				bookings = ChatService.get_user_recent_bookings(db, user, limit=10)
-				user_bookings = [BookingResponse.model_validate(b) for b in bookings]
-				for b in bookings:
+				code = ChatService._extract_booking_code(message, booking_code)
+				b = None
+				if code:
+					q = db.query(Booking).filter(Booking.booking_code == code)
+					b = q.first()
+				if b is not None:
 					trip_name = b.trip.name if b.trip else "-"
+					# Tambahkan konteks naratif non-PII
 					chunks.append(
-						f"Booking {b.booking_code}: trip {trip_name}, tgl {b.departure_date}, peserta {b.participants}, total {b.total_amount}, status {b.status}/{b.payment_status}"
+						f"Booking {b.booking_code}: trip {trip_name}, keberangkatan {b.departure_date}, status {b.status}, pembayaran {b.payment_status}"
 					)
-				used_keys.append("bookings.mine.latest10")
+					used_keys.append("bookings.by_code")
+					# Sertakan payload terstruktur non-PII via related_collections
+					related_collections.setdefault("bookings_public", []).append({
+						"booking_code": b.booking_code,
+						"status": b.status,
+						"payment_status": b.payment_status,
+						"trip_name": trip_name,
+						"departure_date": b.departure_date.isoformat() if getattr(b, "departure_date", None) else None,
+					})
 			except Exception:
 				pass
 

@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from app.routes.routes import include_app_routes
 import logging
 
@@ -7,6 +8,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="TravelGO Chat API", version="1.0.0")
+
+# CORS: izinkan semua origin, metode, dan header
+app.add_middleware(
+	CORSMiddleware,
+	allow_origins=["*"],
+	allow_methods=["*"],
+	allow_headers=["*"],
+)
 
 # Test database connection on startup
 @app.on_event("startup")

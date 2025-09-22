@@ -170,6 +170,69 @@ Response (contoh):
 }
 ```
 
+### 7.3) Mode Streaming (SSE) – HTML per karakter
+
+- Endpoint: `POST /chat/stream`
+- Konten: `text/event-stream` (Server-Sent Events)
+- Body request sama seperti `/chat` (menggunakan `ChatRequest`) dan akan menunggu 5 detik sebelum mulai mengetik balasan per karakter.
+- Payload event berbentuk baris `data: <HTML>` diakhiri dengan baris kosong. HTML bisa langsung dirender ke UI (tanpa `\n`).
+
+Contoh dengan curl (lihat stream apa adanya):
+```bash
+curl -N -X POST http://127.0.0.1:8000/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"message":"promo apa saja hari ini"}'
+```
+
+Contoh di browser (vanilla JS) dengan fetch streaming:
+```html
+<div id="chat"></div>
+<script>
+async function send(message){
+  const res = await fetch('http://127.0.0.1:8000/chat/stream', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({message})
+  });
+  if(!res.ok || !res.body){
+    document.getElementById('chat').innerText = 'Stream error';
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const append = (html) => {
+    // Pastikan target container aman/dipercaya. Sanitasi bila perlu.
+    document.getElementById('chat').insertAdjacentHTML('beforeend', html);
+  };
+  while(true){
+    const {value, done} = await reader.read();
+    if(done) break;
+    buffer += decoder.decode(value, {stream:true});
+    // SSE event dipisahkan oleh dua newline "\n\n"
+    let idx;
+    while((idx = buffer.indexOf('\n\n')) !== -1){
+      const raw = buffer.slice(0, idx);
+      buffer = buffer.slice(idx+2);
+      // Ambil baris yang diawali 'data: '
+      raw.split('\n').forEach(line => {
+        if(line.startsWith('data: ')){
+          const html = line.slice(6);
+          if(html) append(html);
+        }
+      });
+    }
+  }
+}
+
+send('berikan saya tips bepergian di malam hari');
+</script>
+```
+
+Catatan tampilan:
+- Balasan utama di-stream per karakter dalam tag `<p>` atau `<li>` (untuk list). Setelah teks selesai, blok HTML tambahan (aksi/promo/trip terkait) akan dikirim sebagai satu event terpisah.
+- Jika ingin efek ketik lebih cepat/lambat, atur di server (interval karakter 10–25ms) atau buffer di klien sebelum render.
+
 #### B) Promo hari ini (otomatis menambahkan filter tanggal)
 Request:
 ```bash
@@ -266,6 +329,42 @@ Bot menerapkan prioritas berikut:
 Kaidah tambahan:
 - Filter tanggal untuk promo hanya ditambahkan jika pengguna memintanya ("hari ini", "bulan ini", "tahun ini"). Jika tidak, query promos tidak membatasi tanggal selain `is_active = 1`.
 - SQL AI dibatasi SELECT-only dan tabel whitelist.
+
+#### 7.2.1) No-Auth Private via Explicit Identifier (hanya di /chat)
+- Endpoint `/chat` tidak memerlukan login.
+- Untuk mengakses data privat (contoh: detail booking), pengguna wajib menyebutkan identifier unik secara eksplisit di pesan, misalnya kode booking `TG-ABC123`.
+- Tanpa identifier valid, bot tidak akan menampilkan data privat dan akan meminta Anda menyebutkan identifier yang diperlukan.
+
+Contoh (tanpa identifier):
+```json
+{
+  "message": "tolong tampilkan booking saya"
+}
+```
+Respons:
+```json
+{
+  "reply": "Untuk pertanyaan privat, sebutkan identifier unik (mis. kode booking). Contoh: 'status booking TG-ABC123'",
+  "used_context_keys": []
+}
+```
+
+Contoh (dengan identifier):
+```json
+{
+  "message": "status booking TG-ABC123"
+}
+```
+Respons (contoh ringkas):
+```json
+{
+  "reply": "Booking TG-ABC123 berstatus confirmed dan sudah dibayar.",
+  "used_context_keys": ["bookings.by_code"],
+  "user_bookings": [
+    {"booking_code": "TG-ABC123", "status": "confirmed", "payment_status": "paid"}
+  ]
+}
+```
 
 Contoh Fallback General (intent public, DB kosong):
 Request:

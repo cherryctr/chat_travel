@@ -99,6 +99,9 @@ class GeminiService:
 			"- trip_facilities: trip_id, name, type\n"
 			"- trip_itineraries: trip_id, day, title\n"
 			"- reviews: trip_id, reviewer_name, rating\n"
+			"- categories: id, name, slug, is_active\n"
+			"- trip_categories: id, name, slug, is_active\n"
+			"- tags: id, name, slug\n"
 			"Untuk promos, sertakan kolom start_date, end_date, is_active agar lengkap. "
 			+ date_hint +
 			"Format jawaban HANYA JSON valid (tanpa penjelasan): [{\"table\":\"...\",\"sql\":\"...\"}]."
@@ -147,5 +150,13 @@ class GeminiService:
 			fallbacks.append(
 				"SELECT id, name, slug, location, duration, price, status, is_active "
 				"FROM trips WHERE is_active = 1 AND status = 'published' ORDER BY id DESC LIMIT 10"
+			)
+		# Categories fallback
+		if any(k in msg for k in ["kategori", "category", "categories"]):
+			fallbacks.append(
+				"SELECT id, name, slug, is_active FROM categories WHERE is_active = 1 ORDER BY name ASC LIMIT 50"
+			)
+			fallbacks.append(
+				"SELECT id, name, slug, is_active FROM trip_categories WHERE is_active = 1 ORDER BY name ASC LIMIT 50"
 			)
 		return fallbacks

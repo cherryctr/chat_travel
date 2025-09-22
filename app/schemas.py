@@ -25,7 +25,7 @@ class UserResponse(UserBase):
 
 
 class UserProfile(UserResponse):
-	bookings: List["BookingResponse"] = []
+	bookings: List["BookingResponse"] = Field(default_factory=list)
 
 
 # ===== TRIP SCHEMAS =====
@@ -123,16 +123,18 @@ class PromoSummary(BaseModel):
 class ChatRequest(BaseModel):
 	message: str
 	user_id: Optional[int] = None
+	# Optional identifiers for private queries (no-auth mode)
+	booking_code: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
 	reply: str
-	used_context_keys: List[str] = []
-	suggested_actions: List[str] = []
-	related_trips: List[TripResponse] = []
-	user_bookings: List[BookingResponse] = []
-	related_promos: List["PromoSummary"] = []
-	generated_queries: List[str] = []
+	used_context_keys: List[str] = Field(default_factory=list)
+	suggested_actions: List[str] = Field(default_factory=list)
+	related_trips: List[TripResponse] = Field(default_factory=list)
+	user_bookings: List[BookingResponse] = Field(default_factory=list)
+	related_promos: List["PromoSummary"] = Field(default_factory=list)
+	generated_queries: List[str] = Field(default_factory=list)
 	summary: str | None = None
 	related_collections: Dict[str, List[dict]] = Field(default_factory=dict)
 
